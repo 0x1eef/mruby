@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "task.h"
 
 /* Get task pointer from self with validation */
@@ -66,6 +67,53 @@ static const struct mrb_data_type mrb_task_type = {
   "Task", mrb_task_free,
 };
 
+static void
+mrb_task_debug(mrb_state *mrb, const char *where, mrb_task *t, mrb_bool error)
+{
+  const char *enabled = getenv("MRUBY_TASK_DEBUG");
+  const char *name = "(unnamed)";
+  mrb_int name_len = 9;
+  mrb_callinfo *ci;
+
+  if (!enabled || enabled[0] == '\0') return;
+
+  if (mrb_string_p(t->name)) {
+    name = RSTRING_PTR(t->name);
+    name_len = RSTRING_LEN(t->name);
+  }
+
+  ci = t->c.ci;
+  fprintf(stderr,
+          "mruby-task: %s task=%p name=%.*s status=%u cstatus=%u reason=%u "
+          "switching=%u error=%u result_tt=%d ci=%p pc=%p proc=%p\n",
+          where,
+          (void*)t,
+          (int)name_len,
+          name,
+          (unsigned)t->status,
+          (unsigned)t->c.status,
+          (unsigned)t->reason,
+          (unsigned)mrb->task.switching,
+          (unsigned)error,
+          (int)mrb_type(t->result),
+          (void*)ci,
+          ci ? (void*)ci->pc : NULL,
+          ci ? (void*)ci->proc : NULL);
+}
+
+static void
+mrb_task_mark_stack_value(mrb_state *mrb, mrb_value *slot)
+{
+  mrb_value value = *slot;
+
+  if (mrb_immediate_p(value)) return;
+  if (mrb_object_dead_p(mrb, mrb_basic_ptr(value))) {
+    SET_NIL_VALUE(*slot);
+    return;
+  }
+  mrb_gc_mark(mrb, mrb_basic_ptr(value));
+}
+
 /*
  * GC marking function for all tasks
  * Called from gc.c during root_scan_phase
@@ -92,7 +140,7 @@ mrb_task_mark_all(mrb_state *mrb)
         }
         if (c->stbase + e > c->stend) e = c->stend - c->stbase;
         for (i = 0; i < e; i++) {
-          mrb_gc_mark_value(mrb, c->stbase[i]);
+          mrb_task_mark_stack_value(mrb, &c->stbase[i]);
         }
         /* Clear the dead slots above the live range, matching
            mark_context_stack() in gc.c. A preempted task whose live range
@@ -208,6 +256,8 @@ static inline mrb_bool
 task_cleanup_if_stopped(mrb_state *mrb, mrb_task *t)
 {
   if (t->status == MRB_TASK_STATUS_DORMANT || t->c.status == MRB_TASK_STOPPED) {
+    mrb_task_debug(mrb, "cleanup-stopped", t, FALSE);
+
     /* Task is terminated but still in queue - remove it */
     mrb_task_disable_irq();
     mrb_task_q_delete(mrb, t);
@@ -409,10 +459,13 @@ execute_task(mrb_state *mrb, mrb_task *t)
      mrb_task_value() / Task#value. */
   if (error) {
     t->c.status = MRB_TASK_STOPPED;
+    mrb_task_debug(mrb, "protect-error", t, TRUE);
   }
 
   /* Handle task termination */
   if (t->c.status == MRB_TASK_STOPPED) {
+    mrb_task_debug(mrb, "execute-stopped", t, error);
+
     switching_ = FALSE;
     mrb_task_disable_irq();
     mrb_task_q_delete(mrb, t);
@@ -1427,6 +1480,8 @@ terminate_task_internal(mrb_state *mrb, mrb_task *t)
 {
   if (t->status == MRB_TASK_STATUS_DORMANT) return;
 
+  mrb_task_debug(mrb, "terminate", t, FALSE);
+
   mrb_task_disable_irq();
   mrb_task_q_delete(mrb, t);
   t->status = MRB_TASK_STATUS_DORMANT;
@@ -1470,6 +1525,7 @@ mrb_stop_task(mrb_state *mrb, mrb_value task)
   if (t->c.status == MRB_TASK_STOPPED) {
     return FALSE;  /* Already stopped */
   }
+  mrb_task_debug(mrb, "stop", t, FALSE);
   t->c.status = MRB_TASK_STOPPED;
   return TRUE;
 }
