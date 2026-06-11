@@ -1626,7 +1626,7 @@ mrb_task_vm_debug_stop(mrb_state *mrb, const char *where, const mrb_irep *irep, 
 
   fprintf(stderr,
           "mruby-task-vm: stop where=%s context=%p cstatus=%u vmexec=%u "
-          "ci=%p cibase=%p cci=%u keep_context=%u pc=%p pc_offset=%td "
+          "ci=%p cibase=%p cci=%u keep_context=%p pc=%p pc_offset=%td "
           "irep=%p proc=%p result_tt=%d\n",
           where,
           (void*)mrb->c,
@@ -1635,7 +1635,7 @@ mrb_task_vm_debug_stop(mrb_state *mrb, const char *where, const mrb_irep *irep, 
           (void*)ci,
           (void*)mrb->c->cibase,
           ci ? (unsigned)ci->cci : 0,
-          ci ? (unsigned)ci->u.keep_context : 0,
+          ci ? ci->u.keep_context : NULL,
           ci ? (void*)ci->pc : NULL,
           pc_offset,
           (void*)irep,
@@ -1651,7 +1651,10 @@ mrb_task_vm_debug_stop(mrb_state *mrb, const char *where, const mrb_irep *irep, 
    crashes (issue #6862). Switches resume at the next OP boundary after
    the walk releases gc.iterating. A pending switch is also deferred while
    executing across a C call boundary (see task_across_c_boundary). A
-   pending MRB_TASK_STOPPED is not deferred, since the task is going away.
+   switch request is ignored in root_c: there is no task context to save,
+   and returning early from top-level mrb_vm_run leaves the root call-info
+   stack unbalanced. A pending MRB_TASK_STOPPED is not deferred, since the
+   task is going away.
 
    mrb->jmp is restored to prev_jmp before returning, exactly as the
    normal return paths below do. mrb_vm_exec set mrb->jmp to its own
@@ -1661,7 +1664,8 @@ mrb_task_vm_debug_stop(mrb_state *mrb, const char *where, const mrb_irep *irep, 
    This macro must only be expanded where prev_jmp is in scope, i.e.
    inside mrb_vm_exec (via NEXT / END_DISPATCH). */
 #define RETURN_IF_TASK_STOPPED(mrb) do { \
-  if (((mrb)->task.switching && !(mrb)->gc.iterating && \
+  if (((mrb)->c != (mrb)->root_c && \
+       (mrb)->task.switching && !(mrb)->gc.iterating && \
        !task_across_c_boundary(mrb)) || \
       (mrb)->c->status == MRB_TASK_STOPPED) { \
     (mrb)->jmp = prev_jmp; \
