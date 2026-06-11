@@ -20,6 +20,10 @@
 #include <mruby/throw.h>
 #include <mruby/dump.h>
 #include <mruby/internal.h>
+#ifndef MRB_NO_STDIO
+#include <stdio.h>
+#endif
+#include <stdlib.h>
 
 #ifdef MRB_NO_STDIO
 #if defined(__cplusplus)
@@ -1607,6 +1611,39 @@ task_across_c_boundary(mrb_state *mrb)
   return FALSE;
 }
 
+#ifndef MRB_NO_STDIO
+static void
+mrb_task_vm_debug_stop(mrb_state *mrb, const char *where, const mrb_irep *irep, mrb_callinfo *ci, mrb_value v)
+{
+  const char *enabled = getenv("MRUBY_TASK_DEBUG");
+  ptrdiff_t pc_offset = -1;
+
+  if (!enabled || enabled[0] == '\0') return;
+
+  if (irep && ci && ci->pc) {
+    pc_offset = ci->pc - irep->iseq;
+  }
+
+  fprintf(stderr,
+          "mruby-task-vm: stop where=%s context=%p cstatus=%u vmexec=%u "
+          "ci=%p cibase=%p cci=%u keep_context=%u pc=%p pc_offset=%td "
+          "irep=%p proc=%p result_tt=%d\n",
+          where,
+          (void*)mrb->c,
+          (unsigned)mrb->c->status,
+          (unsigned)mrb->c->vmexec,
+          (void*)ci,
+          (void*)mrb->c->cibase,
+          ci ? (unsigned)ci->cci : 0,
+          ci ? (unsigned)ci->u.keep_context : 0,
+          ci ? (void*)ci->pc : NULL,
+          pc_offset,
+          (void*)irep,
+          ci ? (void*)ci->proc : NULL,
+          (int)mrb_type(v));
+}
+#endif
+
 /* Defer task switches while a C-level ObjectSpace walk holds gc.iterating
    true. The walk runs callbacks (which may call back into mrb_vm_exec via
    mrb_yield); returning early from an inner exec while the outer C
@@ -1631,10 +1668,18 @@ task_across_c_boundary(mrb_state *mrb)
     return mrb_nil_value(); \
   } \
 } while (0)
+#ifndef MRB_NO_STDIO
+#define TASK_STOP(mrb) do { \
+  mrb_task_vm_debug_stop((mrb), __func__, irep, ci, v); \
+  if (mrb->c->status != MRB_TASK_STOPPED) \
+    mrb->c->status = MRB_TASK_STOPPED; \
+} while (0)
+#else
 #define TASK_STOP(mrb) do { \
   if (mrb->c->status != MRB_TASK_STOPPED) \
     mrb->c->status = MRB_TASK_STOPPED; \
 } while (0)
+#endif
 #define TASK_RETURN_EXCEPTION_AS_VALUE(mrb) ((mrb)->task.exception_as_result)
 #else
 #define RETURN_IF_TASK_STOPPED(mrb)
